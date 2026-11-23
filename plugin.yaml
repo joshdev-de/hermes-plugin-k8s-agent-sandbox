@@ -1,0 +1,24 @@
+manifest_version: 2
+api_version: 1
+name: k8s_agent_sandbox
+version: "0.1.0"
+description: >-
+  Terminal backend (terminal.backend: k8s_agent_sandbox) that runs Hermes's terminal, file and
+  code-execution tools in Kubernetes Agent Sandbox pods, one gVisor sandbox per session.
+  Disclosure: only works with Hermes running inside a Kubernetes cluster. Uses Hermes's in-cluster
+  ServiceAccount to create, patch and delete SandboxClaims and patch Sandboxes in one namespace.
+  Connects over the cluster network to each sandbox's sandboxd (REST and gRPC). Runs a background
+  thread for claim heartbeats and an orphan sweep. Copies Hermes's skills, cache and configured
+  credential files into the sandbox (one way, never persisted). Hermes launches a bundled helper
+  process (stdio_bridge.py) for streams. Needs plugins.isolation: in_process.
+author: joshdev-de
+license: MIT
+homepage: https://github.com/joshdev-de/hermes-plugin-k8s-agent-sandbox
+tags: [terminal, backend, kubernetes, sandbox, gvisor]
+kind: backend
+platforms: [linux]
+requires_hermes: ">=0.23.0"
+provides_tools: []
+provides_hooks: [on_session_delete]
+requires_env: []
+capabilities: []

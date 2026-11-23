@@ -1,0 +1,10 @@
+[project]
+name = "hermes-plugin-k8s-agent-sandbox"
+version = "0.1.0"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    # Agent Sandbox Python client, same version as the agent-sandbox controller.
+    # The grpc extra is needed for the sandboxd runtime's process API.
+    "k8s-agent-sandbox[grpc]==1.0.12",
+]

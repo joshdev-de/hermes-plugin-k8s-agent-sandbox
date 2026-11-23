@@ -1,0 +1,112 @@
+# Template for the per-session sandboxes. See the README, "Sandbox template", for what it must provide.
+# Commands run as root, like Hermes's Docker backend, with the same restrictions: all capabilities
+# dropped except DAC_OVERRIDE, CHOWN, FOWNER, SETUID, SETGID, and no privilege escalation.
+# Everything runs under gVisor, so root in the sandbox is not root on the node.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: hermes-backend
+  namespace: hermes-sandboxes
+spec:
+  service: true                            # stable DNS name per sandbox (SDK in-cluster mode)
+  # The controller keeps one NetworkPolicy for this template (hermes-backend-network-policy),
+  # selecting its sandboxes, default deny both ways. These rules replace its built-in defaults,
+  # which would only admit sandbox-router and point the pods at public DNS. Needs a CNI that
+  # enforces NetworkPolicy.
+  networkPolicyManagement: Managed
+  networkPolicy:
+    ingress:
+      # Only Hermes reaches sandboxd: REST (files, health) and gRPC (processes, streams).
+      - from:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: hermes } }
+            podSelector: { matchLabels: { app: hermes } }
+        ports:
+          - { port: 8080, protocol: TCP }
+          - { port: 9090, protocol: TCP }
+    egress:
+      # Cluster DNS.
+      - to:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+            podSelector: { matchLabels: { k8s-app: kube-dns } }
+        ports:
+          - { port: 53, protocol: UDP }
+          - { port: 53, protocol: TCP }
+      # The internet (apt, pip, npm, web), but not the cluster, private networks or link-local
+      # addresses. Sandboxes never call the model; Hermes does. Drop this rule for no internet at
+      # all, and adjust the ranges to your cluster's pod and service CIDRs.
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+                - 100.64.0.0/10    # carrier-grade NAT
+                - 169.254.0.0/16   # link-local, including cloud metadata endpoints
+  envVarsInjectionPolicy: Disallowed       # per-claim env would bypass the warm pool
+  volumeClaimTemplatesPolicy: Disallowed   # per-claim volumes would bypass the warm pool too
+  # One volume per sandbox, deleted together with its claim.
+  volumeClaimTemplates:
+    - metadata:
+        name: sandbox-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources: { requests: { storage: 20Gi } }
+  podTemplate:
+    spec:
+      runtimeClassName: gvisor
+      automountServiceAccountToken: false  # sandboxes get no Kubernetes API access
+      restartPolicy: OnFailure
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: install-sandboxd
+          image: registry.k8s.io/agent-sandbox/sandboxd:v1.0.12
+          command: ["/bin/sh", "-c", "cp /usr/local/bin/sandboxd /sandboxd-bin/sandboxd"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: sandboxd-bin, mountPath: /sandboxd-bin }
+      containers:
+        - name: hermes-backend
+          image: nousresearch/hermes-sandbox:v0.23.3-desktop   # keep in step with your Hermes version
+          command:
+            - /sandboxd-bin/sandboxd
+            - --root-dir=/workspace
+            - --rest-port=8080
+            - --grpc-port=9090
+          env:
+            - { name: HOME, value: /root }
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [DAC_OVERRIDE, CHOWN, FOWNER, SETUID, SETGID]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "2", memory: 4Gi }
+          ports:
+            - { name: rest, containerPort: 8080 }   # file API + health
+            - { name: grpc, containerPort: 9090 }   # process API
+          readinessProbe:
+            httpGet: { path: /v1/health, port: 8080 }
+          volumeMounts:
+            - { name: sandboxd-bin, mountPath: /sandboxd-bin, readOnly: true }
+            - { name: sandbox-data, mountPath: /workspace, subPath: workspace }
+            - { name: sandbox-data, mountPath: /root, subPath: home }
+            - { name: hermes-files, mountPath: /root/.hermes }   # filled by the plugin, never persisted
+            - { name: tmp, mountPath: /tmp }
+            - { name: var-tmp, mountPath: /var/tmp }
+      volumes:
+        - name: sandboxd-bin
+          emptyDir: {}
+        - name: hermes-files
+          emptyDir: { sizeLimit: 1Gi }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 512Mi }
+        - name: var-tmp
+          emptyDir: { medium: Memory, sizeLimit: 256Mi }

@@ -1,0 +1,71 @@
+# Hermes with the plugin, shortened: add your model configuration and keys to the hermes container.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-data
+  namespace: hermes
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 10Gi } }   # memories, sessions, skills, config.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+  namespace: hermes
+  labels: { app: hermes }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: hermes }
+  template:
+    metadata:
+      labels: { app: hermes }      # admitted by the template's networkPolicy (02)
+    spec:
+      serviceAccountName: hermes   # bound to the hermes-sandbox-manager Role
+      securityContext:
+        fsGroup: 10000
+      initContainers:
+        # Installs the plugin into Hermes's data directory; skipped when that release is already
+        # installed. `hermes plugins install --ref` takes only a full commit SHA, so the release tag
+        # (PLUGIN_REF) is resolved to its commit first.
+        - name: install-plugin
+          image: nousresearch/hermes-agent:v0.23.3
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              meta=/opt/data/plugins/.install-metadata.json
+              have=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("k8s_agent_sandbox", {}).get("revision", ""))' "$meta" 2>/dev/null || true)
+              want=$(git ls-remote "$PLUGIN_REPO" "refs/tags/$PLUGIN_REF" "refs/tags/$PLUGIN_REF^{}" | tail -n1 | cut -f1)
+              if [ -z "$want" ]; then
+                [ -n "$have" ] && { echo "cannot resolve $PLUGIN_REF, keeping installed $have"; exit 0; }
+                echo "cannot resolve $PLUGIN_REF in $PLUGIN_REPO" >&2; exit 1
+              fi
+              [ "$have" = "$want" ] && exit 0
+              /opt/hermes/bin/hermes plugins install "$PLUGIN_REPO" --ref "$want" --force --yes-deps --enable
+          env:
+            - { name: PLUGIN_REPO, value: "https://github.com/joshdev-de/hermes-plugin-k8s-agent-sandbox.git" }
+            - { name: PLUGIN_REF, value: v0.1.0 }   # release tag
+            - { name: HERMES_HOME, value: /opt/data }
+            - { name: HOME, value: /tmp }
+          securityContext:
+            runAsUser: 10000
+            runAsGroup: 10000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - { name: data, mountPath: /opt/data }
+      containers:
+        - name: hermes
+          image: nousresearch/hermes-agent:v0.23.3
+          args: ["gateway", "run"]
+          env:
+            - { name: K8S_AGENT_SANDBOX_WARMPOOL, value: hermes-backend }
+            - { name: K8S_AGENT_SANDBOX_NAMESPACE, value: hermes-sandboxes }
+          volumeMounts:
+            - { name: data, mountPath: /opt/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: hermes-data }

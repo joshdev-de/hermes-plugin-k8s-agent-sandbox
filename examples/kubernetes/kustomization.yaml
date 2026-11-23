@@ -1,0 +1,11 @@
+# Apply after the Agent Sandbox controller is installed (its CRDs must exist):
+#   kubectl apply -k examples/kubernetes
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespaces.yaml
+  - 01-runtimeclass.yaml
+  - 02-sandbox-template.yaml
+  - 03-sandbox-warmpool.yaml
+  - 04-hermes-rbac.yaml
+  - 05-hermes-deployment.yaml
